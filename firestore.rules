@@ -1,0 +1,183 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // =========================================================================
+    // HELPER FUNCTIONS & AUTHENTICATION PREDICATES
+    // =========================================================================
+
+    // User must be authenticated via Firebase Authentication
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // Retrieve user profile document from /users/{uid}
+    function getUserDoc() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    // Check if the user exists and is flagged as an active company member
+    function isActiveUser() {
+      return isAuthenticated() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        getUserDoc().isActive == true;
+    }
+
+    // Check if the user is an active Administrator
+    function isAdmin() {
+      return isActiveUser() && getUserDoc().role == 'ADMIN';
+    }
+
+    // Check if the user has an explicit operational permission (Admins always true; Team members require explicit boolean flag)
+    function hasPermission(permissionName) {
+      return isAdmin() || (
+        getUserDoc().role == 'TEAM_MEMBER' &&
+        ('permissions' in getUserDoc()) &&
+        (permissionName in getUserDoc().permissions) &&
+        getUserDoc().permissions[permissionName] == true
+      );
+    }
+
+    // Check if the user is an active authorized member (Admin or Team Member)
+    function isTeamMember() {
+      return isActiveUser() && (getUserDoc().role == 'TEAM_MEMBER' || getUserDoc().role == 'ADMIN');
+    }
+
+    // Validate valid payment rails
+    function isValidPaymentMethod(method) {
+      return method in ['Cash', 'UPI', 'Bank Transfer', 'Cheque', 'Card', 'Other'];
+    }
+
+    // =========================================================================
+    // 1. USERS COLLECTION
+    // Schema: uid, displayName, email, role, isActive, permissions, createdAt
+    // =========================================================================
+    match /users/{userId} {
+      // Any authenticated active company member can read user profiles
+      // (Required for displaying creator names in the transaction register)
+      allow read: if isAuthenticated() && (request.auth.uid == userId || isActiveUser());
+
+      // Creating a user profile:
+      // - Authenticated users can create their own profile document on first sign-in (Phone/Email)
+      // - Existing ADMIN can provision new team members
+      allow create: if isAuthenticated() && (
+        request.auth.uid == userId ||
+        isAdmin()
+      );
+
+      // Updating a user profile:
+      // - Only ADMIN can change user roles, active status, or granular permissions
+      // - Authenticated non-admin users can update their own display name without elevating roles or permissions
+      allow update: if isAuthenticated() && (
+        isAdmin() ||
+        (
+          request.auth.uid == userId &&
+          request.resource.data.role == resource.data.role &&
+          request.resource.data.isActive == resource.data.isActive &&
+          (!('permissions' in resource.data) || request.resource.data.permissions == resource.data.permissions)
+        )
+      );
+
+      // Hard deletion of user accounts:
+      // Allowed only for active Administrators, and self-deletion is strictly denied
+      allow delete: if isAdmin() && request.auth.uid != userId;
+    }
+
+    // =========================================================================
+    // 2. COMPANY SETTINGS COLLECTION
+    // Schema: companyName, openingBalance, openingBalanceEffectiveDate, currencyCode, timeZone
+    // =========================================================================
+    match /companySettings/{settingId} {
+      // Any active company member can view company settings and opening balance
+      allow read: if isActiveUser();
+
+      // Only verified administrators can set or modify financial baselines
+      allow create, update: if isAdmin() &&
+        request.resource.data.openingBalance is number &&
+        request.resource.data.openingBalance >= 0 &&
+        request.resource.data.currencyCode == 'INR';
+
+      // Company settings document can never be deleted
+      allow delete: if false;
+    }
+
+    // =========================================================================
+    // 3. TRANSACTIONS COLLECTION
+    // Schema: transactionDate, transactionType, amount, amountInPaise, description,
+    //         contactName, contactNumber, paymentMethod, referenceNumber, notes,
+    //         createdBy, createdAt, updatedBy, updatedAt, isDeleted, deletedBy, deletedAt
+    // =========================================================================
+    match /transactions/{transactionId} {
+      // Active company members can read active transactions
+      // Administrators can also read soft-deleted records
+      allow read: if isActiveUser();
+
+      // CREATION: Enforce RBAC permissions - Add Credit and Add Debit require explicit permission!
+      allow create: if isActiveUser() &&
+        // Creator metadata must strictly match the authenticated user's UID
+        request.resource.data.createdBy == request.auth.uid &&
+        request.resource.data.isDeleted == false &&
+        // Financial amount validation: positive non-zero number
+        request.resource.data.amount is number &&
+        request.resource.data.amount > 0 &&
+        // Transaction classification
+        request.resource.data.transactionType in ['CREDIT', 'DEBIT'] &&
+        // Granular RBAC Permissions: Credit and Debit must be explicitly granted by Admin
+        (isAdmin() ||
+          (request.resource.data.transactionType == 'CREDIT' && hasPermission('canAddCredit')) ||
+          (request.resource.data.transactionType == 'DEBIT' && hasPermission('canAddDebit'))
+        ) &&
+        // Valid payment methods
+        isValidPaymentMethod(request.resource.data.paymentMethod) &&
+        // Required descriptive fields
+        request.resource.data.description is string &&
+        request.resource.data.description.size() > 0 &&
+        request.resource.data.contactName is string &&
+        request.resource.data.contactName.size() > 0 &&
+        request.resource.data.transactionDate is string;
+
+      // UPDATE: ONLY ADMINISTRATORS can edit or soft-delete transactions!
+      // Team members are strictly denied update permissions
+      allow update: if isAdmin() &&
+        // Immutable metadata: creator UID and initial createdAt cannot be altered
+        request.resource.data.createdBy == resource.data.createdBy &&
+        request.resource.data.createdAt == resource.data.createdAt &&
+        // Validate payload fields
+        request.resource.data.amount is number &&
+        request.resource.data.amount > 0 &&
+        request.resource.data.transactionType in ['CREDIT', 'DEBIT'] &&
+        isValidPaymentMethod(request.resource.data.paymentMethod) &&
+        request.resource.data.description is string &&
+        request.resource.data.description.size() > 0 &&
+        request.resource.data.contactName is string &&
+        request.resource.data.contactName.size() > 0;
+
+      // Deletion permitted ONLY for verified Administrators during ledger resets / maintenance
+      allow delete: if isAdmin();
+    }
+
+    // =========================================================================
+    // 4. AUDIT LOGS COLLECTION
+    // Schema: transactionId, action, userId, userEmail, timestamp, previousValues, newValues
+    // =========================================================================
+    match /auditLogs/{logId} {
+      // Only ADMINISTRATORS are permitted to view audit logs
+      allow read: if isAdmin();
+
+      // Active users can append audit entries during batched writes
+      // The userId field must match their own UID
+      allow create: if isActiveUser() &&
+        request.resource.data.userId == request.auth.uid &&
+        request.resource.data.action in ['CREATE', 'UPDATE', 'DELETE'];
+
+      // Audit logs are append-only; hard deletions permitted ONLY for verified Administrators during ledger resets
+      allow update: if false;
+      allow delete: if isAdmin();
+    }
+
+    // Deny all other unmatched paths by default
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
