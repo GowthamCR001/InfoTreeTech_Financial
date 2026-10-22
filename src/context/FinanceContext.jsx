@@ -335,7 +335,7 @@ export function FinanceProvider({ children }) {
   };
 
   // Provision New Team Member
-  const handleProvisionMember = async ({ displayName, email, phoneNumber, role, password }) => {
+  const handleProvisionMember = async ({ displayName, email, phoneNumber, role, password, permissions }) => {
     if (!currentUser || currentUser.role !== 'ADMIN') {
       throw new Error('Only administrators can provision new team members.');
     }
