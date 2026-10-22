@@ -24,30 +24,50 @@ export function subscribeTransactions(callback, onError, includeDeleted = false)
   }
 
   const txCollection = collection(db, 'transactions');
-  // Order by transaction date descending
-  let q;
-  if (!includeDeleted) {
-    q = query(
-      txCollection,
-      where('isDeleted', '==', false),
-      orderBy('transactionDate', 'desc')
-    );
-  } else {
-    q = query(txCollection, orderBy('transactionDate', 'desc'));
-  }
+  // Order by single field transactionDate descending (does not require composite index)
+  // We filter isDeleted in JavaScript memory so no Firestore composite index is needed.
+  const q = query(txCollection, orderBy('transactionDate', 'desc'));
 
   return onSnapshot(
     q,
     (snapshot) => {
       const items = [];
       snapshot.forEach((docSnap) => {
-        items.push({ id: docSnap.id, ...docSnap.data() });
+        const data = docSnap.data();
+        if (!includeDeleted && data.isDeleted === true) {
+          return;
+        }
+        items.push({ id: docSnap.id, ...data });
       });
       callback(items);
     },
     (err) => {
-      console.error('Transactions subscription error:', err);
-      onError && onError(err);
+      console.warn('Ordered transactions subscription warning, falling back to raw stream:', err);
+      // Resilient fallback: subscribe to raw collection and sort/filter client-side
+      try {
+        return onSnapshot(
+          txCollection,
+          (fallbackSnapshot) => {
+            const items = [];
+            fallbackSnapshot.forEach((docSnap) => {
+              const data = docSnap.data();
+              if (!includeDeleted && data.isDeleted === true) {
+                return;
+              }
+              items.push({ id: docSnap.id, ...data });
+            });
+            // Client-side date descending sort
+            items.sort((a, b) => new Date(b.transactionDate || 0) - new Date(a.transactionDate || 0));
+            callback(items);
+          },
+          (fallbackErr) => {
+            console.error('Fatal transactions subscription error:', fallbackErr);
+            onError && onError(fallbackErr);
+          }
+        );
+      } catch (e) {
+        onError && onError(err);
+      }
     }
   );
 }

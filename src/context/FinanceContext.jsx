@@ -200,7 +200,14 @@ export function FinanceProvider({ children }) {
       return newTx;
     }
 
-    return await createTransaction(txData, currentUser);
+    const created = await createTransaction(txData, currentUser);
+    if (created && created.id) {
+      setTransactions(prev => {
+        if (prev.some(t => t.id === created.id)) return prev;
+        return [created, ...prev];
+      });
+    }
+    return created;
   };
 
   // Edit Transaction (Admin only)
@@ -245,7 +252,9 @@ export function FinanceProvider({ children }) {
       return;
     }
 
-    return await updateTransaction(id, updatedData, previousData, currentUser);
+    const updated = await updateTransaction(id, updatedData, previousData, currentUser);
+    setTransactions(prev => prev.map(t => t.id === id ? { ...t, ...updatedData } : t));
+    return updated;
   };
 
   // Delete Transaction (Admin only, Soft Delete)
@@ -283,7 +292,9 @@ export function FinanceProvider({ children }) {
       return;
     }
 
-    return await softDeleteTransaction(id, previousData, currentUser);
+    const res = await softDeleteTransaction(id, previousData, currentUser);
+    setTransactions(prev => prev.filter(t => t.id !== id));
+    return res;
   };
 
   // Update Company Settings (Admin only)
