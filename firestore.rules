@@ -53,9 +53,9 @@ service cloud.firestore {
     // Schema: uid, displayName, email, role, isActive, permissions, createdAt
     // =========================================================================
     match /users/{userId} {
-      // Any authenticated active company member can read user profiles
-      // (Required for displaying creator names in the transaction register)
-      allow read: if isAuthenticated() && (request.auth.uid == userId || isActiveUser());
+      // Any authenticated user can read user profiles to find their provisioned account
+      // and display team member names in the transactions register
+      allow read: if isAuthenticated();
 
       // Creating a user profile:
       // - Authenticated users can create their own profile document on first sign-in (Phone/Email)

@@ -36,13 +36,6 @@ const COUNTRY_CODES = [
   { code: '+27', country: 'South Africa', flag: '🇿🇦' },
 ];
 
-// Configured test OTP lookup for seamless internal testing without cluttering UI
-const TEST_OTP_LOOKUP = {
-  '+919900713875': '123456',
-  '+916360411266': '123456',
-  '+917483160450': '748316',
-};
-
 export function LoginPage() {
   const { login, sendPhoneOtp, loginWithPhoneOtp, authError, setAuthError } = useAuth();
 
@@ -118,12 +111,8 @@ export function LoginPage() {
       setConfirmationResult(result);
       setPhoneStep('otp');
 
-      // Seamlessly populate test code if testing with configured test number
-      if (TEST_OTP_LOOKUP[fullPhone]) {
-        setOtpCode(TEST_OTP_LOOKUP[fullPhone]);
-      } else {
-        setOtpCode('');
-      }
+      // Keep OTP input field blank for real OTP entry
+      setOtpCode('');
     } catch {
       // Error handled in context
     } finally {
@@ -139,32 +128,17 @@ export function LoginPage() {
       return;
     }
 
+    if (!confirmationResult) {
+      setAuthError('No active verification session found. Please click "Change Number" and request a new code.');
+      return;
+    }
+
     const cleanDigits = nationalNumber.replace(/[\s-]/g, '');
     const fullPhone = `${countryCode}${cleanDigits}`;
 
-    // Use active session or build direct test session
-    const activeSession = confirmationResult || {
-      isTestFallback: true,
-      phoneNumber: fullPhone,
-      expectedOtp: TEST_OTP_LOOKUP[fullPhone] || '123456',
-      confirm: async (code) => {
-        if (TEST_OTP_LOOKUP[fullPhone] && code.trim() !== TEST_OTP_LOOKUP[fullPhone]) {
-          throw new Error('Invalid verification code. Expected: ' + TEST_OTP_LOOKUP[fullPhone]);
-        }
-        return {
-          user: {
-            uid: `admin-${cleanDigits}`,
-            phoneNumber: fullPhone,
-            email: `${cleanDigits}@infotreetech.com`,
-            displayName: `Admin (${fullPhone})`,
-          }
-        };
-      }
-    };
-
     setIsLoading(true);
     try {
-      await loginWithPhoneOtp(activeSession, otpCode, fullPhone);
+      await loginWithPhoneOtp(confirmationResult, otpCode, fullPhone);
     } catch {
       // Error handled in context
     } finally {

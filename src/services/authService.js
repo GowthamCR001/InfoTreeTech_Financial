@@ -229,7 +229,7 @@ export function initRecaptchaVerifier() {
  */
 export async function sendPhoneVerificationCode(phoneNumber) {
   if (!isFirebaseConfigured() || !auth) {
-    throw new Error('Firebase is not configured yet. Please check your credentials.');
+    throw new Error('Firebase is not configured yet. Please check your credentials in .env or settings.');
   }
 
   let formatted = phoneNumber.trim().replace(/[\s-]/g, '');
@@ -237,57 +237,33 @@ export async function sendPhoneVerificationCode(phoneNumber) {
     formatted = '+' + formatted;
   }
 
-  const TEST_CONFIG = {
-    '+919900713875': '123456',
-    '+916360411266': '123456',
-    '+917483160450': '748316',
-  };
-
   try {
     const verifier = initRecaptchaVerifier();
     const confirmationResult = await signInWithPhoneNumber(auth, formatted, verifier);
     window.confirmationResult = confirmationResult;
     return confirmationResult;
   } catch (error) {
-    console.warn('Live Firebase Phone Auth notice:', error);
+    console.error('Live Firebase Phone Auth error:', error);
 
-    if (TEST_CONFIG[formatted]) {
-      const fallbackResult = {
-        isTestFallback: true,
-        phoneNumber: formatted,
-        expectedOtp: TEST_CONFIG[formatted],
-        confirm: async (code) => {
-          if (code.trim() !== TEST_CONFIG[formatted]) {
-            throw new Error('Invalid verification code. Please enter ' + TEST_CONFIG[formatted]);
-          }
-          return {
-            user: {
-              uid: `admin-${formatted.replace(/[^0-9]/g, '')}`,
-              phoneNumber: formatted,
-              email: `${formatted.replace(/[^0-9]/g, '')}@infotreetech.com`,
-              displayName: '',
-            }
-          };
-        }
-      };
-      window.confirmationResult = fallbackResult;
-      return fallbackResult;
-    }
-
-    if (error.code === 'auth/operation-not-allowed' || error.message?.includes('operation-not-allowed') || error.message?.includes('region enabled')) {
+    if (error.code === 'auth/unauthorized-domain') {
+      const currentHost = typeof window !== 'undefined' ? window.location.hostname : 'your-app.vercel.app';
       throw new Error(
-        'Firebase SMS Region Policy: Go to Firebase Console > Authentication > Settings tab > SMS region policy > add India (+91), then click Save.'
+        `Firebase Unauthorized Domain: "${currentHost}" is not allowed. In Firebase Console, go to Authentication > Settings > Authorized domains > click "Add domain" and enter "${currentHost}".`
+      );
+    } else if (error.code === 'auth/operation-not-allowed' || error.message?.includes('operation-not-allowed') || error.message?.includes('region enabled')) {
+      throw new Error(
+        'Firebase SMS Region Policy: Go to Firebase Console > Authentication > Settings tab > SMS region policy > ensure India (+91) is enabled, then click Save.'
       );
     } else if (error.code === 'auth/invalid-phone-number') {
-      throw new Error('Invalid phone number format. Please ensure country code and digits are valid.');
+      throw new Error('Invalid phone number format. Please ensure country code and 10-digit number are correct.');
     } else if (error.code === 'auth/too-many-requests') {
-      throw new Error('Too many requests. Please wait a few moments before trying again.');
+      throw new Error('Too many requests from this device or network. Please wait a few moments before trying again.');
     } else if (error.code === 'auth/quota-exceeded') {
-      throw new Error('SMS quota exceeded. Please contact your company administrator.');
-    } else if (error.code === 'auth/captcha-check-failed') {
-      throw new Error('Security verification check failed. Please refresh the page and try again.');
+      throw new Error('Firebase daily SMS quota exceeded. Add this phone number under Firebase Console > Authentication > Sign-in method > Phone > Phone numbers for testing (optional) to bypass SMS limits.');
+    } else if (error.code === 'auth/captcha-check-failed' || error.code === 'auth/invalid-app-credential') {
+      throw new Error('reCAPTCHA security check failed. Please ensure your Vercel domain is added to Firebase Authorized Domains and reload the page.');
     }
-    throw error;
+    throw new Error(error.message || 'Failed to send OTP verification code via SMS.');
   }
 }
 
